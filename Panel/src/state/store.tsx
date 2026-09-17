@@ -25,6 +25,7 @@ import {
   type NadesValue,
   type PresetsState,
 } from "../lib/api";
+import { checkForUpdate, type UpdateCheckResult } from "../lib/updater";
 
 type Store = {
   ready: boolean;
@@ -48,6 +49,14 @@ type Store = {
   botItemsPending: Record<BotItemKey, boolean>;
   dropKnives: DropKnivesState | null;
   csgoPath: string | null;
+  /** Update checker. Lives here rather than inside the Update page so the
+   *  automatic check can run once at startup, whichever view is open. */
+  autoUpdateCheck: boolean;
+  setAutoUpdateCheck: (on: boolean) => void;
+  updateResult: UpdateCheckResult | null;
+  updateChecking: boolean;
+  updateCheckedAt: number | null;
+  checkForUpdateNow: () => Promise<void>;
   /** Last global error (for the error modal). */
   error: AppError | null;
   clearError: () => void;
@@ -70,9 +79,13 @@ type Store = {
 };
 
 /** A boolean flag persisted in localStorage so it survives a full close/reopen
- *  of the panel (used for the per-section "changed while CS2 running" lights). */
-function usePersistedFlag(key: string): [boolean, (v: boolean) => void] {
-  const [value, setValue] = useState<boolean>(() => localStorage.getItem(key) === "1");
+ *  of the panel (used for the per-section "changed while CS2 running" lights).
+ *  `fallback` applies only while the key has never been written. */
+function usePersistedFlag(key: string, fallback = false): [boolean, (v: boolean) => void] {
+  const [value, setValue] = useState<boolean>(() => {
+    const raw = localStorage.getItem(key);
+    return raw === null ? fallback : raw === "1";
+  });
   const set = useCallback(
     (v: boolean) => {
       setValue(v);
@@ -168,9 +181,18 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
   const [botItemsPending, setBotItemPending, clearBotItemsPending] =
     usePersistedFlagMap("cs2bi.botItemsPending");
   const [dropKnives, setDropKnives] = useState<DropKnivesState | null>(null);
+  // Update checking. The preference defaults to on (this is a public GitHub API
+  // call, nothing about the machine is sent) but the user can switch it off, and
+  // the choice is remembered like every other persisted flag in this panel.
+  const [autoUpdateCheck, setAutoUpdateCheck] = usePersistedFlag("cs2bi.autoUpdateCheck", true);
+  const [updateResult, setUpdateResult] = useState<UpdateCheckResult | null>(null);
+  const [updateChecking, setUpdateChecking] = useState(false);
+  const [updateCheckedAt, setUpdateCheckedAt] = useState<number | null>(null);
   const [error, setError] = useState<AppError | null>(null);
   const configRef = useRef<AppConfig | null>(null);
   configRef.current = config;
+  // Non-overlapping guard for the update probe (manual button + startup check).
+  const updateCheckingRef = useRef(false);
 
   const reportError = useCallback((e: unknown) => setError(toAppError(e)), []);
   const clearError = useCallback(() => setError(null), []);
@@ -410,6 +432,22 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
     [reportError]
   );
 
+  // One shared code path for the Update page button and the startup probe. A
+  // failed check comes back as data (UpdateCheckResult), never thrown, so a flaky
+  // network shows an inline note instead of the global error modal.
+  const checkForUpdateNow = useCallback(async () => {
+    if (updateCheckingRef.current) return;
+    updateCheckingRef.current = true;
+    setUpdateChecking(true);
+    try {
+      setUpdateResult(await checkForUpdate());
+      setUpdateCheckedAt(Date.now());
+    } finally {
+      updateCheckingRef.current = false;
+      setUpdateChecking(false);
+    }
+  }, []);
+
   // Global safety net: surface any unexpected error/rejection as a modal so the
   // UI never fails silently.
   useEffect(() => {
@@ -484,6 +522,16 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
     return () => window.clearInterval(id);
   }, [ready, refreshAll]);
 
+  // Startup update probe: at most once per app launch, and only while the
+  // preference is on (turning it on mid-session runs it too). Kept out of the
+  // 500 ms status poll on purpose — the GitHub API is rate-limited per IP.
+  const autoCheckedRef = useRef(false);
+  useEffect(() => {
+    if (!ready || !autoUpdateCheck || autoCheckedRef.current) return;
+    autoCheckedRef.current = true;
+    void checkForUpdateNow();
+  }, [ready, autoUpdateCheck, checkForUpdateNow]);
+
   const value: Store = {
     ready,
     config,
@@ -501,6 +549,12 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
     botItemsPending,
     dropKnives,
     csgoPath: directory?.valid ? directory.selected : null,
+    autoUpdateCheck,
+    setAutoUpdateCheck,
+    updateResult,
+    updateChecking,
+    updateCheckedAt,
+    checkForUpdateNow,
     error,
     clearError,
     reportError,

@@ -1,3 +1,10 @@
 **/bin/
 **/obj/
 .gitignore
+
+# Panel tooling
+Panel/node_modules/
+Panel/dist/
+
+# Inno Setup compiler output
+inno-setup/output/
