@@ -3,7 +3,7 @@
 **English** · [简体中文](README.zh-CN.md)
 
 `setup.iss` builds `CS2-Bot-Improver-Setup.exe`: a Windows installer that puts the
-Panel application and every plugin file into Counter-Strike 2's `game\csgo`
+Panel application and the whole plugin into Counter-Strike 2's `game\csgo`
 folder.
 
 ---
@@ -14,27 +14,184 @@ folder.
   `ArchitecturesAllowed=x64compatible`, which older 6.x releases reject.
   Verified with 6.7.3.
 - Windows x64 (Counter-Strike 2 itself is 64-bit only).
+- A **distribution tree** to package — see [Payload](#payload) below. This is the
+  part that is easy to get wrong, so read that section before anything else.
+
+---
+
+## Payload
+
+> [!IMPORTANT]
+> **This repository is source-only and cannot be packaged directly.**
+
+`.gitignore` excludes `**/bin/` and `**/obj/`, and the loader files CS2 needs were
+never committed at all. So a checkout contains 97 `.cs` files and **zero DLLs**,
+while what actually runs is **510 DLLs** plus the Metamod stubs and a packed
+`botprofile.vpk` — 152 MB of binaries against 4.6 MB of sources.
+
+An installer built straight from the checkout therefore copies source files into
+`game\csgo` and no loadable code. CS2 starts with the plugin entirely absent, and
+nothing in the UI says why. `setup.iss` now refuses to build in that case: it
+checks 21 files that the plugin cannot start without and aborts with the missing
+paths listed.
+
+The payload must come from a **distribution tree** instead — the contents of the
+official `CS2BotImprover.zip`:
+
+```
+addons/
+backup/
+cfg/
+overrides/
+gameinfo.gi
+Panel.exe                        (the packaged Panel application)
+```
+
+Put that tree in **`inno-setup\payload\`** (git-ignored), or point ISCC at it:
+
+```bat
+ISCC /DPayloadRoot="D:\build\CS2BotImprover" setup.iss
+```
+
+### Why those 21 files are fatal when missing
+
+| Missing | Consequence |
+| --- | --- |
+| `gameinfo.gi` | CS2 never looks inside `addons\` — nothing loads at all |
+| `addons\metamod.vdf`, `addons\metamod_x64.vdf` | Metamod is never injected; the whole chain dies here |
+| `addons\metamod\bin\win64\server.dll`, `metamod.2.cs2.dll` | Metamod has no implementation to load |
+| `addons\metamod\counterstrikesharp.vdf` | Metamod never loads CounterStrikeSharp |
+| `counterstrikesharp\bin\win64\counterstrikesharp.dll` | No scripting host, so no plugin runs |
+| `counterstrikesharp\dotnet\dotnet.exe` | CounterStrikeSharp has no runtime to boot |
+| `counterstrikesharp\configs\core.json` | The Panel's Skins toggle has nothing to edit |
+| `counterstrikesharp\gamedata\gamedata.json` | Signatures/offsets for this game build are unknown |
+| `counterstrikesharp\plugins\BotAI\BotAI.dll` | A plugin the rest of the chain expects is gone |
+| `addons\{BotController,BotHider,BotVision}\bin\win64\*.dll` | The three native plugins are absent |
+| `addons\RayTrace\bin\win64\RayTrace.dll` | Ray tracing is absent |
+| `backup\Online\gameinfo.gi`, `backup\WithBots\gameinfo.gi` | The Panel's Online / Bot Mode switch has nothing to copy |
+| `overrides\botprofile.vpk`, `overrides\Medium\botprofile.vpk` | The Panel's difficulty switch has no profiles to activate |
+| `cfg\my_bot_normal_config.cfg` | The game loads no bot configuration |
+
+### Not offered as options, on purpose
+
+The repository also carries `overrides/archived/` and two
+`cfg/*_rules_unchanged.cfg`. Neither is part of the distribution:
+
+- `overrides/archived/*/botprofile.db` are **uncompiled** profiles; the game reads
+  `botprofile.vpk`. Installing the `.db` files would do nothing.
+- The rules-unchanged variant ships as its **own release zip under the same
+  filenames**, so `my_bot_normal_config.cfg` is the rules-unchanged config in that
+  package. Installing both side by side could not work.
+
+---
+
+### Assembling it — `tools/assemble-payload.mjs`
+
+There is no need to hand-copy files around. The helper script takes an existing
+distribution tree as the base, overlays whatever you rebuilt, and then refuses to
+hand back a tree that is missing anything CS2 needs to start:
+
+```bat
+node inno-setup\tools\assemble-payload.mjs ^
+  --base "D:\build\CS2BotImprover" ^
+  --panel "D:\build\Panel.exe"
+```
+
+| Option | Meaning |
+| --- | --- |
+| `--base <dir>` | Distribution tree to start from. Must contain `gameinfo.gi`. |
+| `--out <dir>` | Where to write the payload. Default `inno-setup\payload`. Wiped first, so no stale files survive. |
+| `--panel <exe>` | Packaged Panel application; published as `Panel.exe`. |
+| `--build` | Run `dotnet build -c Release` over every buildable project first. Omit it when you built in Visual Studio. |
+| `--no-pdb` | Drop the `.pdb` debug symbols. |
+| `--verify-only` | Check an existing payload instead of assembling one. Exit code 1 when incomplete, so it works as a CI gate. |
+
+Two things it derives rather than being told:
+
+- **The required-file list comes from `setup.iss`**, by reading the
+  `#define NeedPayload("…")` checks out of the script. There is exactly one copy
+  of that list, so the script and the installer cannot disagree about what
+  "complete" means.
+- **Each project's destination is its own source folder.** A plugin is packaged
+  only when its assembly name matches its folder name, because that is how
+  CounterStrikeSharp locates it — `plugins\<Name>\<Name>.dll`. Helper assemblies
+  sharing a folder (`plugins\BotAI\Common.csproj`) are reported and skipped.
+
+### If you want to rebuild the plugins yourself
+
+Roughly 150 of the payload's files are third-party and simply vendored; only the
+managed plugins are built from this repository. Things worth knowing before you
+open Visual Studio:
+
+- **11 of the 16 projects are buildable**, all through NuGet — `dotnet restore`
+  is enough, you do **not** need a local CounterStrikeSharp install.
+  `CounterStrikeSharp.API` is referenced as a package.
+- **Three projects reference a prebuilt assembly through a `libs\` folder that is
+  not in the repository.** `BotAimImprover` and `NadeSystem` want
+  `libs\RayTraceApi.dll`; `BotState` wants `libs\BotControllerApi.dll`. Without
+  them those three cannot compile at all — the compiler stops rather than emitting
+  a broken assembly (`BotAimImprover` is the one that genuinely uses the API, via
+  `using RayTraceAPI;`).
+
+  Run this once before opening Visual Studio, and the tool copies the assemblies
+  out of the distribution tree into a git-ignored `libs\` folder:
+
+  ```bat
+  node inno-setup\tools\assemble-payload.mjs --stage-references --base "D:\build\CS2BotImprover"
+  ```
+
+  `--build` does it for you automatically.
+- **Two `<ProjectReference>` entries point at a folder that does not exist**, so
+  those two projects cannot compile either — and the failure arrives as ~40
+  `CS0246` lines, which reads like a code problem rather than a path problem:
+
+  | Project | Points at | Actually lives in |
+  | --- | --- | --- |
+  | `plugins\BotControllerImpl` | `../BotControllerApi/` | `shared\BotControllerApi\` |
+  | `plugins\BotHiderImpl` | `..\BotHiderApi\` | `shared\BotHiderApi\` |
+
+  The tool reports this instead of rewriting it, because where a shared API's
+  source belongs is a project decision. `--stage-references` prints the exact
+  replacement line for each.
+- **`CounterStrikeSharp.API` is pinned to five different versions** across the
+  projects: 1.0.362 (×1), 1.0.367 (×2), 1.0.371 (×6), 1.0.373 (×2), and a floating
+  `*` (×2). The distribution's own `api\CounterStrikeSharp.API.dll` reports
+  **1.0.373**, so nine of those pins are older than the runtime they load into,
+  and the floating ones can resolve to something *newer* than it on a fresh
+  restore — the direction that produces `MissingMethodException` at run time. Worth
+  pinning all of them to the version the shipped runtime actually provides.
+- **There is no `.sln`, no `Directory.Build.props` and no `NuGet.config`** in the
+  repository, so you will want to create a solution yourself — and keep
+  `addons\counterstrikesharp\plugins\disabled\` out of it. That folder holds the
+  Linux variants, one of which references a path on the original author's
+  machine (`..\..\..\..\Tmp\ArchiveV02\Common\bin\Debug\net8.0\Common.dll`).
+  None of it is part of the release.
+- Target frameworks are `net10.0` for most projects and `net8.0` for `BotBuy` and
+  `RoundDamageRecap`. A .NET 10 SDK can target both — no second SDK needed.
+
+The four native plugins (`BotController`, `BotHider`, `BotVision`, `RayTrace`)
+have **no source in this repository**; they live in other projects, so treat their
+binaries as vendored input rather than something to rebuild.
+
+---
 
 ## Quick start
 
-1. Put the packaged Panel executable at **`Panel.exe` in the repository root**.
-   There is no built Panel in the repository — its Tauri backend
-   (`Panel/src-tauri`) is not published — so the installer would otherwise ship
-   without it.
-2. Compile:
+```bat
+:: 1. assemble the payload (base tree + your rebuilt DLLs + the Panel)
+node inno-setup\tools\assemble-payload.mjs --base "D:\build\CS2BotImprover" --panel "D:\build\Panel.exe"
 
-   ```bat
-   ISCC.exe setup.iss
-   ```
+:: 2. build the installer — it picks up inno-setup\payload automatically
+ISCC.exe inno-setup\setup.iss
+```
 
-   …or open `setup.iss` in the Inno Setup IDE and press **Compile**.
-3. The result is `inno-setup\output\CS2-Bot-Improver-Setup.exe` (git-ignored).
+The result is `inno-setup\output\CS2-Bot-Improver-Setup.exe`, around 44 MB.
 
-To point at a build elsewhere, define it on the command line — command-line
-defines win over the built-in lookup:
+`setup.iss` uses `inno-setup\payload` whenever that folder contains a
+`gameinfo.gi`, so step 2 needs no arguments. To read and write trees elsewhere:
 
 ```bat
-ISCC.exe /DPanelExe="C:\build\Panel.exe" setup.iss
+ISCC.exe /DPayloadRoot="D:\build\CS2BotImprover" /DPanelExe="D:\build\Panel.exe" setup.iss
 ```
 
 ---
@@ -60,6 +217,11 @@ ISPP has no JSON parser, but it can read a file one line at a time
 value is then pulled out with `Pos`/`Copy`. If the field cannot be read the
 compile **fails with an explanatory message** rather than silently shipping a
 wrong version number.
+
+The Panel executable and the payload have to come from the **same** release. When
+the executable carries version info that disagrees with `package.json`, the
+compile warns — a mismatched pair would produce an installer whose version label
+lies about the Panel inside it.
 
 ---
 
@@ -107,28 +269,27 @@ it manually. The default field still starts at the conventional location.
 
 ## What gets installed
 
-Always installed:
+From the **payload**:
 
 | Source | Destination |
 | --- | --- |
-| `addons\` | `{app}\addons\` |
-| `cfg\` (minus `*_rules_unchanged.cfg`) | `{app}\cfg\` |
-| `overrides\High\`, `overrides\Low\`, `overrides\Medium\` | `{app}\overrides\...` |
-| `Commands.txt`, `README.md`, `LICENSE` | `{app}\` |
-| `Panel\LICENSE` | `{app}\LICENSE-Panel.txt` |
-| `docs\` | `{app}\docs\` |
+| `addons\` (510 DLLs, all configs and loaders) | `{app}\addons\` |
+| `cfg\` | `{app}\cfg\` |
+| `overrides\` | `{app}\overrides\` |
+| `gameinfo.gi` | `{app}\gameinfo.gi` |
+| `backup\` | `{app}\backup\` |
 | the packaged Panel | `{app}\CS2-Bot-Improver-Panel.exe` |
 
-Offered as optional tasks, **all unchecked by default**:
+From the **repository** (documentation, which the payload does not carry):
 
-- **`rulesunchanged`** — the two `*_rules_unchanged.cfg` configs, for dedicated
-  servers that must keep the standard game rules.
-- **`archived`** — `overrides\archived\`, roughly **32 MB** of extra bot-profile
-  variants.
-- **`desktopicon`** — a desktop shortcut.
+| Source | Destination |
+| --- | --- |
+| `Commands.txt`, `README.md`, `LICENSE` | `{app}\` |
+| `docs\` | `{app}\docs\` |
+| `Panel\LICENSE` | `{app}\LICENSE-Panel.txt` |
 
-Together the optional file groups are about as large as the entire rest of the
-package, which is why none of them is preselected.
+One optional task, **unchecked** by default: a desktop shortcut. Inno's own
+translations supply its label.
 
 ### Notes
 
@@ -159,8 +320,8 @@ cannot offer the installer and sends the user to the release page instead.
 So an installer-enabled release goes:
 
 1. Bump `version` in `Panel/package.json` and build the Panel from it.
-2. Build the installer against that Panel:
-   `ISCC /DPanelExe="…\Panel.exe" setup.iss`
+2. Build the installer against that Panel and that release's distribution tree:
+   `ISCC /DPayloadRoot="…" /DPanelExe="…\Panel.exe" setup.iss`
 3. Create the GitHub release, tagged **`v<version>`** — the same version string
    `package.json` declares, because that is what the comparison runs against.
 4. Attach `CS2-Bot-Improver-Setup.exe`, keeping the name the script produced,
@@ -184,14 +345,10 @@ CS2-Bot-Improver-Setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART ^
   /DIR="D:\SteamLibrary\steamapps\common\Counter-Strike Global Offensive\game\csgo"
 ```
 
-> [!IMPORTANT]
+> [!NOTE]
 > In **silent mode Inno selects every task**, including the ones flagged
-> `unchecked`. An unattended install without an explicit `/TASKS=""` therefore
-> also copies the ≈32 MB of archived overrides. Always pass `/TASKS` explicitly
-> in automation:
->
-> - nothing optional — `/TASKS=""`
-> - everything — `/TASKS="archived,rulesunchanged,desktopicon"`
+> `unchecked`. That only affects the desktop shortcut here — pass `/TASKS=""` for
+> no shortcut, or `/TASKS="desktopicon"` for one.
 
 Other useful flags: `/DIR=…`, `/LANG=…`, `/LOG="install.log"`, `/NORESTART`,
 `/SUPPRESSMSGBOXES`.
@@ -213,9 +370,8 @@ deployment.**
 ## Languages
 
 The wizard ships English, 简体中文, Русский, Deutsch, 日本語 and 한국어. The texts
-Inno does not translate itself — the detection-failure hint, the running-game
-warning and the optional-file task labels — are provided for all six languages in
-`[CustomMessages]`.
+Inno does not translate itself — the detection-failure hint and the running-game
+warning — are provided for all six languages in `[CustomMessages]`.
 
 ---
 
@@ -224,6 +380,8 @@ warning and the optional-file task labels — are provided for all six languages
 | File | Purpose |
 | --- | --- |
 | `setup.iss` | The whole installer — metadata, payload, tasks, languages and Pascal Script. |
+| `tools/assemble-payload.mjs` | Assembles and verifies the payload tree. See above. |
+| `payload/` | The distribution tree to package. Git-ignored, produced by the tool. |
 | `output/` | Build output. Git-ignored. |
 | `README.md` | This document. |
 | `README.zh-CN.md` | 简体中文版本。 |
@@ -232,11 +390,17 @@ warning and the optional-file task labels — are provided for all six languages
 
 ## Troubleshooting
 
-**`Warning: Panel executable not found …` at compile time**
-The installer still builds, but ships *without* the Panel. Put the packaged
-Panel at `Panel.exe` in the repository root, or pass `/DPanelExe="<path>"`.
+**`Error: The payload is incomplete.`**
+The expected fix, when the payload is the repository instead of a distribution
+tree. The warnings directly above the error list every missing path; see
+[Payload](#payload).
 
-**`Error: Panel\package.json is missing …`**
+**`Warning: Panel executable is version X but this installer is built as Y`**
+The Panel executable and the payload came from different releases. Rebuild the
+installer with the matching pair — the version follows
+`Panel/package.json`.
+
+**`Error: Panel\package.json is missing`**
 The `inno-setup` and `Panel` folders must stay side by side in the same
 repository. The script derives every path from its own location, so it works
 from any checkout directory — but not if those two folders are separated.

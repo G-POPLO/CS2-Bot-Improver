@@ -85,23 +85,108 @@
 ; "Panel v1.4.4.exe", "Panel v1.4.5.exe", … behind in the game folder.
 #define PanelExeName "CS2-Bot-Improver-Panel.exe"
 
-; Where the compiled Panel executable is expected. The repository does not carry
-; a built Panel (its Tauri backend, Panel/src-tauri, is not published), so point
-; ISCC at one when building a release:
+
+; ------------------------------------------------------------------------------
+;  Payload — the compiled game\csgo tree, which is NOT this repository
+; ------------------------------------------------------------------------------
+; This repository is source-only by design: .gitignore excludes **/bin/ and
+; **/obj/, and the loaders CS2 needs were never committed at all. So a checkout
+; contains 97 .cs files and no binaries, while the thing that actually runs is
+; ~510 DLLs plus the Metamod stubs and a packed botprofile.vpk.
+;
+; Building straight from the checkout therefore produces an installer that copies
+; source files into game\csgo and no loadable code — CS2 would start with the
+; plugin entirely absent. The payload must come from a *distribution* tree
+; instead: the contents of the official CS2BotImprover.zip (addons\, backup\,
+; cfg\, overrides\, gameinfo.gi, and the Panel executable).
+;
+; Put that tree in inno-setup\payload\, or point ISCC at it:
+;   ISCC /DPayloadRoot="D:\build\CS2BotImprover" setup.iss
+#define PayloadDir AddBackslash(SourcePath) + "payload"
+#ifndef PayloadRoot
+  #if FileExists(PayloadDir + "\gameinfo.gi")
+    #define PayloadRoot PayloadDir
+  #else
+    #define PayloadRoot RepoRoot
+  #endif
+#endif
+
+; Warns and counts when a required file is absent from the payload. Declared
+; before its uses so the counter is updated as each check runs.
+#define PayloadMissing 0
+#define NeedPayload(str RelPath) \
+  Local[0] = PayloadRoot + "\" + RelPath, \
+  FileExists(Local[0]) ? 0 : ( \
+    Warning("  missing from payload: " + Local[0]), \
+    PayloadMissing = PayloadMissing + 1, \
+    0 \
+  )
+
+; One line per file that CS2 cannot start the plugin without. Every entry here is
+; something whose absence is a total, silent failure at run time rather than a
+; degraded feature, which is why they are fatal instead of a warning.
+#expr NeedPayload("addons\metamod.vdf")
+#expr NeedPayload("addons\metamod_x64.vdf")
+#expr NeedPayload("addons\metamod\counterstrikesharp.vdf")
+#expr NeedPayload("addons\metamod\metaplugins.ini")
+#expr NeedPayload("addons\metamod\bin\win64\server.dll")
+#expr NeedPayload("addons\metamod\bin\win64\metamod.2.cs2.dll")
+#expr NeedPayload("addons\counterstrikesharp\bin\win64\counterstrikesharp.dll")
+#expr NeedPayload("addons\counterstrikesharp\dotnet\dotnet.exe")
+#expr NeedPayload("addons\counterstrikesharp\configs\core.json")
+#expr NeedPayload("addons\counterstrikesharp\gamedata\gamedata.json")
+#expr NeedPayload("addons\counterstrikesharp\plugins\BotAI\BotAI.dll")
+#expr NeedPayload("addons\BotController\bin\win64\BotController.dll")
+#expr NeedPayload("addons\BotHider\bin\win64\BotHider.dll")
+#expr NeedPayload("addons\BotVision\bin\win64\BotVision.dll")
+#expr NeedPayload("addons\RayTrace\bin\win64\RayTrace.dll")
+#expr NeedPayload("gameinfo.gi")
+#expr NeedPayload("backup\Online\gameinfo.gi")
+#expr NeedPayload("backup\WithBots\gameinfo.gi")
+#expr NeedPayload("overrides\botprofile.vpk")
+#expr NeedPayload("overrides\Medium\botprofile.vpk")
+#expr NeedPayload("cfg\my_bot_normal_config.cfg")
+
+#if PayloadMissing > 0
+  #expr Warning("Payload root used: " + PayloadRoot)
+  #expr Warning("A source checkout is not a payload — the repository deliberately excludes every compiled binary.")
+  #error The payload is incomplete. See the "Payload" comment in setup.iss and the "Payload" section of README.md: build the installer from a distribution tree (inno-setup\payload\, or /DPayloadRoot="..." ).
+#endif
+
+
+; ------------------------------------------------------------------------------
+;  Panel executable
+; ------------------------------------------------------------------------------
+; Not in the repository (its Tauri backend, Panel/src-tauri, is not published),
+; so point ISCC at one when building a release:
 ;   ISCC /DPanelExe="C:\path\to\Panel.exe" setup.iss
 ; Note this is NOT Panel\dist — that is Vite's web-asset output, not an executable.
 #ifndef PanelExe
-  #if FileExists(RepoRoot + "\Panel.exe")
+  #if FileExists(PayloadRoot + "\Panel.exe")
+    #define PanelExe PayloadRoot + "\Panel.exe"
+  #elif FileExists(PayloadRoot + "\Panel v" + MyAppVersion + ".exe")
+    #define PanelExe PayloadRoot + "\Panel v" + MyAppVersion + ".exe"
+  #elif FileExists(RepoRoot + "\Panel.exe")
     #define PanelExe RepoRoot + "\Panel.exe"
-  #elif FileExists(RepoRoot + "\Panel v" + MyAppVersion + ".exe")
-    #define PanelExe RepoRoot + "\Panel v" + MyAppVersion + ".exe"
   #else
-    #define PanelExe RepoRoot + "\Panel.exe"
+    #define PanelExe PayloadRoot + "\Panel.exe"
   #endif
 #endif
 
 #if !FileExists(PanelExe)
-  #expr Warning("Panel executable not found at " + PanelExe + " — the installer will build without it. Put the packaged Panel at Panel.exe in the repository root, or pass /DPanelExe=""<path>"" to ISCC.")
+  #expr Warning("Panel executable not found at " + PanelExe + " — the installer will build without it. Put the packaged Panel at Panel.exe in the payload, or pass /DPanelExe=""<path>"" to ISCC.")
+#endif
+
+; The Panel and the rest of the payload have to come from the same release: a
+; mismatched pair ships an installer whose version label lies about the Panel
+; inside it. Only checked when the executable actually carries version info.
+#if FileExists(PanelExe)
+  #define PanelExeVersion GetStringFileInfo(PanelExe, PRODUCT_VERSION)
+  #if PanelExeVersion != ""
+    #if PanelExeVersion != MyAppVersion
+      #expr Warning("Panel executable is version " + PanelExeVersion + " but this installer is built as " + MyAppVersion + ". Panel and payload should come from the same release; the installer's version follows Panel\package.json.")
+    #endif
+  #endif
 #endif
 
 
@@ -162,89 +247,64 @@ selectdir_notfound=The Counter-Strike 2 folder could not be located automaticall
 
 cs2running=Counter-Strike 2 appears to be running.%n%nIts files may be locked, which can make the installation fail. Close the game first if possible.%n%nContinue anyway?
 
-task_group=Optional files
-task_rulesunchanged=Alternate configs that leave the standard game rules unchanged (for dedicated servers)
-task_archived=Archived bot profile overrides — extra difficulty and aim variants (≈32 MB)
-
 chinesesimplified.selectdir_notfound=未能自动定位 Counter-Strike 2 的安装目录。%n%n请点击"浏览…"，选择 CS2 安装目录下的 game\csgo 文件夹（通常在 Steam 库中，例如 C:\Program Files (x86)\Steam\steamapps\common\Counter-Strike Global Offensive\game\csgo）。
 
 chinesesimplified.cs2running=检测到 Counter-Strike 2 正在运行。%n%n游戏文件可能被占用，从而导致安装失败。如有可能，请先关闭游戏。%n%n仍要继续吗？
-
-chinesesimplified.task_group=可选文件
-chinesesimplified.task_rulesunchanged=保持标准游戏规则的备用配置（用于专用服务器）
-chinesesimplified.task_archived=归档的机器人档案覆盖 — 额外的难度与瞄准变体（约 32 MB）
 
 russian.selectdir_notfound=Не удалось автоматически найти папку Counter-Strike 2.%n%nНажмите «Обзор…» и выберите папку game\csgo внутри установленной игры (обычно в библиотеке Steam, например C:\Program Files (x86)\Steam\steamapps\common\Counter-Strike Global Offensive\game\csgo).
 
 russian.cs2running=Похоже, Counter-Strike 2 запущена.%n%nЕё файлы могут быть заблокированы, из-за чего установка может завершиться ошибкой. По возможности закройте игру.%n%nВсё равно продолжить?
 
-russian.task_group=Дополнительные файлы
-russian.task_rulesunchanged=Альтернативные конфиги, не изменяющие стандартные правила игры (для выделенных серверов)
-russian.task_archived=Архивные профили ботов — дополнительные варианты сложности и прицеливания (≈32 МБ)
-
 german.selectdir_notfound=Der Counter-Strike-2-Ordner konnte nicht automatisch gefunden werden.%n%nKlicken Sie auf Durchsuchen… und wählen Sie den Ordner game\csgo Ihrer CS2-Installation (üblicherweise in einer Steam-Bibliothek, zum Beispiel C:\Program Files (x86)\Steam\steamapps\common\Counter-Strike Global Offensive\game\csgo).
 
 german.cs2running=Counter-Strike 2 scheint zu laufen.%n%nDie Dateien sind möglicherweise gesperrt, wodurch die Installation fehlschlagen kann. Beenden Sie das Spiel nach Möglichkeit zuerst.%n%nTrotzdem fortfahren?
-
-german.task_group=Optionale Dateien
-german.task_rulesunchanged=Alternative Konfigurationen, die die Standard-Spielregeln unverändert lassen (für dedizierte Server)
-german.task_archived=Archivierte Bot-Profil-Overrides — zusätzliche Schwierigkeits- und Zielvarianten (≈32 MB)
 
 japanese.selectdir_notfound=Counter-Strike 2 のフォルダーを自動的に特定できませんでした。%n%n「参照…」をクリックし、CS2 インストール先の game\csgo フォルダーを選択してください（通常は Steam ライブラリ内、例: C:\Program Files (x86)\Steam\steamapps\common\Counter-Strike Global Offensive\game\csgo）。
 
 japanese.cs2running=Counter-Strike 2 が実行中のようです。%n%nファイルがロックされ、インストールに失敗する可能性があります。可能であれば先にゲームを終了してください。%n%nこのまま続行しますか？
 
-japanese.task_group=オプションのファイル
-japanese.task_rulesunchanged=標準のゲームルールを変更しない代替設定（専用サーバー向け）
-japanese.task_archived=アーカイブされたボットプロファイル — 追加の難易度・エイムバリエーション（約 32 MB）
-
 korean.selectdir_notfound=Counter-Strike 2 폴더를 자동으로 찾지 못했습니다.%n%n"찾아보기…"를 클릭하여 CS2 설치 폴더 안의 game\csgo 폴더를 선택하세요(보통 Steam 라이브러리 안에 있습니다. 예: C:\Program Files (x86)\Steam\steamapps\common\Counter-Strike Global Offensive\game\csgo).
 
 korean.cs2running=Counter-Strike 2가 실행 중인 것 같습니다.%n%n게임 파일이 잠겨 있어 설치가 실패할 수 있습니다. 가능하면 게임을 먼저 종료하세요.%n%n그래도 계속하시겠습니까?
-
-korean.task_group=선택적 파일
-korean.task_rulesunchanged=표준 게임 규칙을 유지하는 대체 설정(전용 서버용)
-korean.task_archived=보관된 봇 프로필 오버라이드 — 추가 난이도 및 조준 변형(약 32MB)
 
 
 ; ------------------------------------------------------------------------------
 ;  Optional items
 ; ------------------------------------------------------------------------------
 [Tasks]
-; Shortcut task (its texts come from Inno's own translations).
+; The only optional item. The repository's extra material (overrides\archived\,
+; *_rules_unchanged.cfg) is deliberately NOT offered: neither is part of the
+; distribution — the archived bot profiles are uncompiled .db sources, and the
+; rules-unchanged variant ships as its own release zip under the same filenames,
+; so installing both sets side by side could not work.
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
-; Extras from the repository that most users do not need. The two file tasks are
-; worth roughly as much as the entire rest of the package put together, so all
-; three are opt-in rather than preselected.
-Name: "rulesunchanged"; Description: "{cm:task_rulesunchanged}"; GroupDescription: "{cm:task_group}"; Flags: unchecked
-Name: "archived"; Description: "{cm:task_archived}"; GroupDescription: "{cm:task_group}"; Flags: unchecked
 
 
 ; ------------------------------------------------------------------------------
 ;  Payload
 ; ------------------------------------------------------------------------------
+; Everything here except the documentation comes from {#PayloadRoot}, the
+; distribution tree described above — never from the source checkout.
 [Files]
-; --- Plugin payload (always installed) ---
-Source: "{#RepoRoot}\addons\*"; DestDir: "{app}\addons"; Flags: ignoreversion recursesubdirs createallsubdirs
-; The two *_rules_unchanged.cfg files are the dedicated-server variants and are
-; offered as an optional task further down, so they are held back here.
-Source: "{#RepoRoot}\cfg\*"; DestDir: "{app}\cfg"; Flags: ignoreversion recursesubdirs createallsubdirs; Excludes: "*_rules_unchanged.cfg"
-Source: "{#RepoRoot}\overrides\High\*"; DestDir: "{app}\overrides\High"; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "{#RepoRoot}\overrides\Low\*"; DestDir: "{app}\overrides\Low"; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "{#RepoRoot}\overrides\Medium\*"; DestDir: "{app}\overrides\Medium"; Flags: ignoreversion recursesubdirs createallsubdirs
+; --- The plugin itself ---
+Source: "{#PayloadRoot}\addons\*"; DestDir: "{app}\addons"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#PayloadRoot}\cfg\*"; DestDir: "{app}\cfg"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#PayloadRoot}\overrides\*"; DestDir: "{app}\overrides"; Flags: ignoreversion recursesubdirs createallsubdirs
+; gameinfo.gi patches CS2's search paths so the game looks inside addons\ at all,
+; and backup\ holds the two variants the Panel's Online / Bot Mode switch copies.
+Source: "{#PayloadRoot}\gameinfo.gi"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#PayloadRoot}\backup\*"; DestDir: "{app}\backup"; Flags: ignoreversion recursesubdirs createallsubdirs
+
+; --- Panel application ---
+Source: "{#PanelExe}"; DestDir: "{app}"; DestName: "{#PanelExeName}"; Flags: ignoreversion skipifsourcedoesntexist
+
+; --- Documentation, which lives in the repository rather than the payload ---
 Source: "{#RepoRoot}\Commands.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#RepoRoot}\README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#RepoRoot}\docs\*"; DestDir: "{app}\docs"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#RepoRoot}\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 ; The Panel is PolyForm-licensed, so its own licence must travel with its binary.
 Source: "{#RepoRoot}\Panel\LICENSE"; DestDir: "{app}"; DestName: "LICENSE-Panel.txt"; Flags: ignoreversion
-
-; --- Panel application (skipped, with a loud warning above, when not built) ---
-Source: "{#PanelExe}"; DestDir: "{app}"; DestName: "{#PanelExeName}"; Flags: ignoreversion skipifsourcedoesntexist
-
-; --- Optional entries, driven by the tasks on the previous page ---
-Source: "{#RepoRoot}\cfg\*_rules_unchanged.cfg"; DestDir: "{app}\cfg"; Flags: ignoreversion; Tasks: rulesunchanged
-Source: "{#RepoRoot}\overrides\archived\*"; DestDir: "{app}\overrides\archived"; Flags: ignoreversion recursesubdirs createallsubdirs; Tasks: archived
 
 
 ; ------------------------------------------------------------------------------

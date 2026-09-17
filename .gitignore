@@ -2,9 +2,20 @@
 **/obj/
 .gitignore
 
+# Visual Studio / MSBuild caches
+.vs/
+*.user
+*.suo
+
+# Prebuilt assemblies staged by inno-setup/tools/assemble-payload.mjs so that
+# projects referencing <HintPath>libs/…</HintPath> can compile.
+addons/**/libs/
+
 # Panel tooling
 Panel/node_modules/
 Panel/dist/
 
 # Inno Setup compiler output
 inno-setup/output/
+# The distribution tree the installer packages: downloaded, not source.
+inno-setup/payload/

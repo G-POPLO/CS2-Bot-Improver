@@ -2,8 +2,8 @@
 
 [English](README.md) · **简体中文**
 
-`setup.iss` 用于生成 `CS2-Bot-Improver-Setup.exe`：一个把 Panel 应用程序与插件
-的全部文件安装到 Counter-Strike 2 的 `game\csgo` 目录里的 Windows 安装程序。
+`setup.iss` 用于生成 `CS2-Bot-Improver-Setup.exe`：一个把 Panel 应用程序与整个插件
+安装到 Counter-Strike 2 的 `game\csgo` 目录里的 Windows 安装程序。
 
 ---
 
@@ -12,25 +12,167 @@
 - **Inno Setup 6.3 或更高版本。** 脚本声明了 `ArchitecturesAllowed=x64compatible`，
   更早的 6.x 版本会拒绝该取值。已在 6.7.3 上验证。
 - Windows x64（Counter-Strike 2 本身仅支持 64 位）。
+- 一份用于打包的**发行树** —— 见下方[载荷](#载荷)一节。这一节最容易踩坑，
+  动手前请先读完。
+
+---
+
+## 载荷
+
+> [!IMPORTANT]
+> **本仓库只有源代码，不能直接用来打包。**
+
+`.gitignore` 排除了 `**/bin/` 与 `**/obj/`，而 CS2 需要的加载器文件则从未被提交过。
+因此一次检出里是 97 个 `.cs` 文件和 **0 个 DLL**，而真正运行所需的是 **510 个 DLL**
+加上 Metamod 加载桩和一个打包好的 `botprofile.vpk` —— 152 MB 二进制对 4.6 MB 源码。
+
+直接从检出打包，得到的安装程序会把源码文件复制进 `game\csgo`，没有任何可加载的代码。
+CS2 启动后插件完全不存在，而界面不会给出任何提示。现在 `setup.iss` 拒绝在这种情况下
+构建：它会检查 21 个插件启动所必需的文件，缺任何一个就中止，并逐条列出缺失路径。
+
+载荷必须来自一份**发行树** —— 也就是官方 `CS2BotImprover.zip` 的内容：
+
+```
+addons/
+backup/
+cfg/
+overrides/
+gameinfo.gi
+Panel.exe                        （打包好的 Panel 应用程序）
+```
+
+把这份树放到 **`inno-setup\payload\`**（已被 git 忽略），或用参数指向它：
+
+```bat
+ISCC /DPayloadRoot="D:\build\CS2BotImprover" setup.iss
+```
+
+### 为什么这 21 个文件缺一个就是致命问题
+
+| 缺失项 | 后果 |
+| --- | --- |
+| `gameinfo.gi` | CS2 根本不会去 `addons\` 里找东西 —— 什么都加载不了 |
+| `addons\metamod.vdf`、`addons\metamod_x64.vdf` | Metamod 从未被注入，整条链在此断掉 |
+| `addons\metamod\bin\win64\server.dll`、`metamod.2.cs2.dll` | Metamod 没有可加载的实现 |
+| `addons\metamod\counterstrikesharp.vdf` | Metamod 不会去加载 CounterStrikeSharp |
+| `counterstrikesharp\bin\win64\counterstrikesharp.dll` | 没有脚本宿主，任何插件都跑不起来 |
+| `counterstrikesharp\dotnet\dotnet.exe` | CounterStrikeSharp 没有可启动的运行时 |
+| `counterstrikesharp\configs\core.json` | Panel 的皮肤开关没有可修改的对象 |
+| `counterstrikesharp\gamedata\gamedata.json` | 不知道该游戏版本的签名与偏移 |
+| `counterstrikesharp\plugins\BotAI\BotAI.dll` | 链条上其他环节依赖的插件不存在 |
+| `addons\{BotController,BotHider,BotVision}\bin\win64\*.dll` | 三个原生插件全部缺失 |
+| `addons\RayTrace\bin\win64\RayTrace.dll` | 光线追踪缺失 |
+| `backup\Online\gameinfo.gi`、`backup\WithBots\gameinfo.gi` | Panel 的联机 / 机器人模式切换没有可复制的文件 |
+| `overrides\botprofile.vpk`、`overrides\Medium\botprofile.vpk` | Panel 的难度切换没有可启用的档案 |
+| `cfg\my_bot_normal_config.cfg` | 游戏不会加载任何机器人配置 |
+
+### 特意不作为选项提供的内容
+
+仓库里还带着 `overrides/archived/` 和两个 `cfg/*_rules_unchanged.cfg`。这两者都不属于
+发行内容：
+
+- `overrides/archived/*/botprofile.db` 是**未编译**的档案，游戏读的是 `botprofile.vpk`。
+  装进去这些 `.db` 不会有任何作用。
+- 规则不变版本是以**独立发行压缩包、相同文件名**提供的一一在那个包里
+  `my_bot_normal_config.cfg` 本身就是规则不变配置。两套并排安装不可能生效。
+
+---
+
+### 组装载荷 —— `tools/assemble-payload.mjs`
+
+不需要手工拷来拷去。这个辅助脚本以一棵现成的发行树为底，覆盖你重新编译出来的产物，
+然后**拒绝交出一棵缺少 CS2 启动所需任何文件的树**：
+
+```bat
+node inno-setup\tools\assemble-payload.mjs ^
+  --base "D:\build\CS2BotImprover" ^
+  --panel "D:\build\Panel.exe"
+```
+
+| 参数 | 含义 |
+| --- | --- |
+| `--base <dir>` | 作为底部的发行树，必须含 `gameinfo.gi`。 |
+| `--out <dir>` | 载荷输出位置，默认 `inno-setup\payload`。会先清空，不会残留旧文件。 |
+| `--panel <exe>` | 打包好的 Panel 应用程序，发布为 `Panel.exe`。 |
+| `--build` | 先对全部可编译项目执行 `dotnet build -c Release`。用 VS 编译过就不需要这个参数。 |
+| `--no-pdb` | 丢弃 `.pdb` 调试符号。 |
+| `--verify-only` | 只校验已有载荷，不组装。不完整时退出码为 1，可直接当 CI 门禁。 |
+
+有两件事是它自己推导出来的，而不是靠你告诉它：
+
+- **必需文件清单直接读自 `setup.iss`** —— 解析脚本里的
+  `#define NeedPayload("…")` 检查项。这份清单全项目只有一处，所以脚本和安装程序
+  对"完整"的定义不可能不一致。
+- **每个项目的目标目录就是它自己的源码目录。** 只有当程序集名称与文件夹名一致时才会
+  被打包，因为 CounterStrikeSharp 就是按 `plugins\<Name>\<Name>.dll` 找插件的。
+  同目录下的辅助程序集（`plugins\BotAI\Common.csproj`）会被列出并跳过。
+
+### 如果你想自己重新编译插件
+
+载荷里大约 150 个文件是第三方的、直接 vendor 进来；真正由本仓库编译的只有那些托管
+插件。打开 Visual Studio 之前，有几件事值得先知道：
+
+- **16 个项目里有 11 个可以编译**，全部走 NuGet —— `dotnet restore` 就够了，
+  **不需要**在本机安装 CounterStrikeSharp。`CounterStrikeSharp.API` 是以包的形式引用的。
+- **有三个项目引用了仓库里并不存在的 `libs\` 目录中的预编译程序集。**
+  `BotAimImprover` 与 `NadeSystem` 需要 `libs\RayTraceApi.dll`；
+  `BotState` 需要 `libs\BotControllerApi.dll`。缺了它们这三个项目根本编不过 ——
+  编译器会直接停止，而不会产出坏程序集（其中 `BotAimImprover` 是真正用到该 API 的，
+  源码里有 `using RayTraceAPI;`）。
+
+  打开 Visual Studio 之前先执行一次，工具会把程序集从发行树拷进一个被 git 忽略的
+  `libs\` 目录：
+
+  ```bat
+  node inno-setup\tools\assemble-payload.mjs --stage-references --base "D:\build\CS2BotImprover"
+  ```
+
+  `--build` 会自动完成这一步。
+- **有两处 `<ProjectReference>` 指向了不存在的目录**，因此这两个项目同样编不过 ——
+  而且失败表现出来是约 40 行 `CS0246`，看起来像代码问题而不是路径问题：
+
+  | 项目 | 指向 | 实际位置 |
+  | --- | --- | --- |
+  | `plugins\BotControllerImpl` | `../BotControllerApi/` | `shared\BotControllerApi\` |
+  | `plugins\BotHiderImpl` | `..\BotHiderApi\` | `shared\BotHiderApi\` |
+
+  工具只报告、不自动改写 —— 共享 API 的源码该放在哪里是项目决策，不是构建修复。
+  `--stage-references` 会为每一处打印出可直接替换的正确写法。
+- **`CounterStrikeSharp.API` 被钉在 5 个不同版本上**：1.0.362（×1）、1.0.367（×2）、
+  1.0.371（×6）、1.0.373（×2），以及浮动的 `*`（×2）。发行包自带的
+  `api\CounterStrikeSharp.API.dll` 实际版本是 **1.0.373** —— 也就是说其中 9 处钉版
+  **低于**它们要加载的运行时，而浮动的那两个在一次全新还原后可能拉到**比运行时更新**
+  的版本 —— 那正是会在运行时抛 `MissingMethodException` 的方向。建议全部钉到发行运行时
+  实际提供的那个版本。
+- **仓库里没有 `.sln`、没有 `Directory.Build.props`、没有 `NuGet.config`**，所以你需要
+  自己建解决方案 —— 并且把 `addons\counterstrikesharp\plugins\disabled\` 排除在外。
+  那个目录装的是 Linux 变体，其中一个引用了原开发者电脑上的路径
+  （`..\..\..\..\Tmp\ArchiveV02\Common\bin\Debug\net8.0\Common.dll`）。这些内容都不属于发布。
+- 目标框架上，多数项目是 `net10.0`，`BotBuy` 与 `RoundDamageRecap` 是 `net8.0`。
+  一个 .NET 10 SDK 可以同时面向两者 —— 不需要再装第二套 SDK。
+
+四个原生插件（`BotController`、`BotHider`、`BotVision`、`RayTrace`）在**本仓库没有源码**，
+它们在别的项目里，因此请把它们的二进制当作 vendor 输入，而不是可重新编译的产物。
+
+---
 
 ## 快速开始
 
-1. 把打包好的 Panel 可执行文件放到**仓库根目录下的 `Panel.exe`**。
-   仓库里没有已构建的 Panel —— 它的 Tauri 后端（`Panel/src-tauri`）并未公开，
-   否则安装包会缺少 Panel。
-2. 编译：
+```bat
+:: 1. 组装载荷（发行树 + 你重新编译的 DLL + Panel）
+node inno-setup\tools\assemble-payload.mjs --base "D:\build\CS2BotImprover" --panel "D:\build\Panel.exe"
 
-   ```bat
-   ISCC.exe setup.iss
-   ```
+:: 2. 编译安装包 —— 会自动使用 inno-setup\payload
+ISCC.exe inno-setup\setup.iss
+```
 
-   ……或者用 Inno Setup IDE 打开 `setup.iss`，点击 **Compile**。
-3. 产物为 `inno-setup\output\CS2-Bot-Improver-Setup.exe`（已被 git 忽略）。
+产物为 `inno-setup\output\CS2-Bot-Improver-Setup.exe`，约 44 MB。
 
-如果可执行文件在别处，用命令行覆盖 —— 命令行定义的优先级高于内置查找：
+只要 `inno-setup\payload` 目录里有 `gameinfo.gi`，`setup.iss` 就会自动使用它，
+因此第 2 步不需要任何参数。如需读写别处的树：
 
 ```bat
-ISCC.exe /DPanelExe="C:\build\Panel.exe" setup.iss
+ISCC.exe /DPayloadRoot="D:\build\CS2BotImprover" /DPanelExe="D:\build\Panel.exe" setup.iss
 ```
 
 ---
@@ -52,6 +194,10 @@ ISCC.exe /DPanelExe="C:\build\Panel.exe" setup.iss
 ISPP 没有 JSON 解析器，但它可以逐行读取文件（`FileOpen`/`FileRead`），
 取单个键值足够；随后用 `Pos`/`Copy` 提取 `"version"` 的值。
 如果读不到该字段，**编译会直接报错并说明原因**，而不是悄悄打出一个版本号错误的包。
+
+Panel 可执行文件与载荷必须来自**同一个发行版本**。当可执行文件的版本信息与
+`package.json` 不一致时，编译会给出警告 —— 版本错配会让安装包的版本标签
+与里面实际装的 Panel 不符。
 
 ---
 
@@ -95,26 +241,26 @@ E:\SteamLibrary\steamapps\common\Counter-Strike Global Offensive\game\csgo
 
 ## 安装内容
 
-始终安装：
+来自**载荷**：
 
 | 源 | 目标 |
 | --- | --- |
-| `addons\` | `{app}\addons\` |
-| `cfg\`（不含 `*_rules_unchanged.cfg`） | `{app}\cfg\` |
-| `overrides\High\`、`overrides\Low\`、`overrides\Medium\` | `{app}\overrides\...` |
-| `Commands.txt`、`README.md`、`LICENSE` | `{app}\` |
-| `Panel\LICENSE` | `{app}\LICENSE-Panel.txt` |
-| `docs\` | `{app}\docs\` |
+| `addons\`（510 个 DLL、全部配置与加载器） | `{app}\addons\` |
+| `cfg\` | `{app}\cfg\` |
+| `overrides\` | `{app}\overrides\` |
+| `gameinfo.gi` | `{app}\gameinfo.gi` |
+| `backup\` | `{app}\backup\` |
 | 打包好的 Panel | `{app}\CS2-Bot-Improver-Panel.exe` |
 
-以下为可选任务，**默认全部不勾选**：
+来自**仓库**（文档类，载荷里没有）：
 
-- **`rulesunchanged`** —— 两个 `*_rules_unchanged.cfg`，给需要保持标准游戏规则的
-  专用服务器用。
-- **`archived`** —— `overrides\archived\`，约 **32 MB** 的额外机器人档案变体。
-- **`desktopicon`** —— 桌面快捷方式。
+| 源 | 目标 |
+| --- | --- |
+| `Commands.txt`、`README.md`、`LICENSE` | `{app}\` |
+| `docs\` | `{app}\docs\` |
+| `Panel\LICENSE` | `{app}\LICENSE-Panel.txt` |
 
-两个可选文件组加起来，体积几乎与包的其余部分相当，因此都不预选。
+唯一一个可选任务，**默认不勾选**：创建桌面快捷方式（文案由 Inno 自带翻译提供）。
 
 ### 几点说明
 
@@ -141,8 +287,8 @@ CS2-Bot-Improver-Setup.exe
 因此，带安装包的发布流程是：
 
 1. 提升 `Panel/package.json` 的 `version`，并用它构建 Panel。
-2. 针对该 Panel 构建安装包：
-   `ISCC /DPanelExe="…\Panel.exe" setup.iss`
+2. 针对该 Panel 与该版本的发行树构建安装包：
+   `ISCC /DPayloadRoot="…" /DPanelExe="…\Panel.exe" setup.iss`
 3. 创建 GitHub 发布，标签为 **`v<版本号>`** —— 与 `package.json` 声明的版本字符串
    完全一致，因为版本比较就是基于它进行的。
 4. 把 `CS2-Bot-Improver-Setup.exe` 上传到该发布中，保持脚本产出的名称不变，
@@ -165,13 +311,10 @@ CS2-Bot-Improver-Setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART ^
   /DIR="D:\SteamLibrary\steamapps\common\Counter-Strike Global Offensive\game\csgo"
 ```
 
-> [!IMPORTANT]
+> [!NOTE]
 > **在静默模式下，Inno 会选中所有任务**，包括标记为 `unchecked` 的那些。
-> 因此不显式传 `/TASKS=""` 的无人值守安装，也会把约 32 MB 的归档覆盖一并装上。
-> 在自动化里请务必显式传入 `/TASKS`：
->
-> - 不要任何可选项 —— `/TASKS=""`
-> - 全都要 —— `/TASKS="archived,rulesunchanged,desktopicon"`
+> 这里唯一受影响的是桌面快捷方式 —— 传 `/TASKS=""` 不创建快捷方式，
+> 传 `/TASKS="desktopicon"` 则创建。
 
 其它常用参数：`/DIR=…`、`/LANG=…`、`/LOG="install.log"`、`/NORESTART`、
 `/SUPPRESSMSGBOXES`。
@@ -190,8 +333,7 @@ CS2-Bot-Improver-Setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART ^
 ## 语言
 
 向导内置英文、简体中文、俄语、德语、日语、韩语。Inno 自身没有翻译的那些文案
-（检测失败提示、游戏运行中警告、可选文件任务标签）已在 `[CustomMessages]`
-中为这六种语言全部提供。
+（检测失败提示、游戏运行中警告）已在 `[CustomMessages]` 中为这六种语言全部提供。
 
 ---
 
@@ -199,7 +341,9 @@ CS2-Bot-Improver-Setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART ^
 
 | 文件 | 用途 |
 | --- | --- |
-| `setup.iss` | 完整的安装脚本 —— 元数据、打包内容、任务、语言与 Pascal Script。 |
+| `setup.iss` | 完整的安装脚本 —— 元数据、载荷、任务、语言与 Pascal Script。 |
+| `tools/assemble-payload.mjs` | 组装并校验载荷树，见上文。 |
+| `payload/` | 待打包的发行树，已被 git 忽略，由上述工具生成。 |
 | `output/` | 编译产物，已被 git 忽略。 |
 | `README.md` | 英文文档。 |
 | `README.zh-CN.md` | 本文档。 |
@@ -208,11 +352,15 @@ CS2-Bot-Improver-Setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART ^
 
 ## 常见问题
 
-**编译时出现 `Warning: Panel executable not found …`**
-安装包仍会生成，但**不含** Panel。请把打包好的 Panel 放到仓库根目录的 `Panel.exe`，
-或用 `/DPanelExe="<路径>"` 指定。
+**出现 `Error: The payload is incomplete.`**
+当载荷是仓库而不是发行树时，这就是预期的拦截。报错正上方的警告会逐条列出所有缺失路径，
+详见[载荷](#载荷)。
 
-**出现 `Error: Panel\package.json is missing …`**
+**出现 `Warning: Panel executable is version X but this installer is built as Y`**
+Panel 可执行文件与载荷来自不同版本。请用配套的一对重新构建 —— 版本号跟随
+`Panel/package.json`。
+
+**出现 `Error: Panel\package.json is missing`**
 `inno-setup` 与 `Panel` 两个目录必须并排放在同一个仓库里。脚本的所有路径都从自身
 位置推导，因此放到任何检出目录都能编译 —— 但这仅限于两个目录没有被拆开的情况。
 
