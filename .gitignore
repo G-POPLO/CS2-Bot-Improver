@@ -19,3 +19,7 @@ Panel/dist/
 inno-setup/output/
 # The distribution tree the installer packages: downloaded, not source.
 inno-setup/payload/
+# Per-machine record of what --deploy last wrote into a game install, so a later
+# deploy can withdraw a plugin this repository no longer contains. Machine-local
+# by nature: it names a game folder on this disk.
+inno-setup/.deploy-state.json

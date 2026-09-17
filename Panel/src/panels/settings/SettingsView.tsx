@@ -34,7 +34,7 @@ export default function SettingsView({ onClose }: { onClose: () => void }) {
   return (
     <div className="settings">
       <div className="settings__head">
-        <button className="settings__back" onClick={back} aria-label="Back">
+        <button className="settings__back" onClick={back} aria-label={t("common.back")}>
           <BackIcon size={20} />
         </button>
         <span className="settings__title">{t(TITLE_KEYS[page])}</span>

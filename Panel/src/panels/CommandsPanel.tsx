@@ -233,8 +233,8 @@ export default function CommandsPanel({ onBack }: { onBack: () => void }) {
           className="cmd__nav"
           onClick={goPrev}
           disabled={!hasMatches}
-          aria-label="Previous match"
-          title="Previous (Shift+Enter)"
+          aria-label={t("cmd.prev")}
+          title={t("cmd.prevHint")}
         >
           <ChevronUp size={16} />
         </button>
@@ -242,8 +242,8 @@ export default function CommandsPanel({ onBack }: { onBack: () => void }) {
           className="cmd__nav"
           onClick={goNext}
           disabled={!hasMatches}
-          aria-label="Next match"
-          title="Next (Enter)"
+          aria-label={t("cmd.next")}
+          title={t("cmd.nextHint")}
         >
           <ChevronDown size={16} />
         </button>

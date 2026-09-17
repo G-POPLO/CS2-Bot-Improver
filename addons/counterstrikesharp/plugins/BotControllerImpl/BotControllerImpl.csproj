@@ -11,14 +11,14 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="CounterStrikeSharp.API" Version="1.0.371">
+    <PackageReference Include="CounterStrikeSharp.API" Version="1.0.374">
       <Private>false</Private>
       <ExcludeAssets>runtime</ExcludeAssets>
     </PackageReference>
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="../BotControllerApi/BotControllerApi.csproj">
+    <ProjectReference Include="../../shared/BotControllerApi/BotControllerApi.csproj">
       <Private>false</Private>
     </ProjectReference>
   </ItemGroup>

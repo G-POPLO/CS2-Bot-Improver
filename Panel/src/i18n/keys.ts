@@ -34,6 +34,8 @@ export const EN = {
   "pre.copy": "Copy",
   "pre.bind": "Bind",
   "pre.pressKey": "Press a key…",
+  "pre.clickThenPressKey": "Click, then press a key",
+  "pre.knifeAlt": "knife {id}",
 
   "bi.title": "Bot Items",
   "bi.skins": "Skins",
@@ -53,6 +55,10 @@ export const EN = {
   // Placeholder hints shown (non-selectable) after certain bot commands.
   "cmd.hint.botName": "bot name",
   "cmd.hint.number": "number",
+  "cmd.prev": "Previous match",
+  "cmd.prevHint": "Previous (Shift+Enter)",
+  "cmd.next": "Next match",
+  "cmd.nextHint": "Next (Enter)",
 
   "set.title": "Settings",
   "set.devs": "Devs",
@@ -61,6 +67,7 @@ export const EN = {
   "set.updates": "Updates",
   "set.project": "Project",
   "set.browse": "Browse…",
+  "set.selectFolder": "Select game/csgo folder",
   "set.steamNotDetected": "Steam was not detected. Use Browse to locate game/csgo.",
   "set.noCsgo": "No game/csgo directories detected.",
 
@@ -90,6 +97,8 @@ export const EN = {
   "ctx.refresh": "Refresh",
 
   "common.ok": "OK",
+  "common.back": "Back",
+  "common.close": "Close",
   "common.copied": "Copied",
   "common.copyFailed": "Copy failed",
   "common.nothingToCopy": "Nothing to copy",

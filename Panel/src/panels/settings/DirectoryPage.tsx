@@ -11,7 +11,7 @@ export default function DirectoryPage() {
 
   const browse = async () => {
     try {
-      const picked = await open({ directory: true, title: "Select game/csgo folder" });
+      const picked = await open({ directory: true, title: t("set.selectFolder") });
       if (typeof picked === "string") await chooseDirectory(picked);
     } catch (e) {
       reportError(e);

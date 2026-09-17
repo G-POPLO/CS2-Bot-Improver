@@ -1,4 +1,5 @@
 import { useEffect, type ReactNode } from "react";
+import { useT } from "../i18n";
 import { CloseIcon } from "./icons";
 import "./Modal.css";
 
@@ -12,6 +13,7 @@ type Props = {
 };
 
 export default function Modal({ open, title, onClose, children, footer, width = 360 }: Props) {
+  const t = useT();
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
@@ -31,7 +33,7 @@ export default function Modal({ open, title, onClose, children, footer, width = 
       >
         <div className="modal__head">
           <div className="modal__title">{title}</div>
-          <button className="modal__close" onClick={onClose} aria-label="Close">
+          <button className="modal__close" onClick={onClose} aria-label={t("common.close")}>
             <CloseIcon size={16} />
           </button>
         </div>

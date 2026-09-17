@@ -103,8 +103,24 @@ node inno-setup\tools\assemble-payload.mjs ^
 | `--out <dir>` | Where to write the payload. Default `inno-setup\payload`. Wiped first, so no stale files survive. |
 | `--panel <exe>` | Packaged Panel application; published as `Panel.exe`. |
 | `--build` | Run `dotnet build -c Release` over every buildable project first. Omit it when you built in Visual Studio. |
+| `--stage-references` | Only stage the missing `libs/` references, then stop. Run once before opening Visual Studio. |
+| `--fix-references` | Repair `<ProjectReference>` entries pointing at a folder that does not exist. Opt-in, because it edits source files; prints the `git checkout` that undoes it. |
+| `--write-solution <path>` | Write a `.slnx` listing exactly the projects the package needs, for building in Visual Studio. |
+| `--deploy` | Copy the rebuilt assemblies straight into a CS2 install instead of assembling a payload. Adds and updates, and withdraws only files an earlier deploy of its own wrote. See [the development loop](#the-loop-while-you-are-editing-code). |
+| `--game <dir>` | Which install to deploy into: `…\game\csgo`, the CS2 root, or the Steam library holding it. Auto-detected when omitted — which means a bare `--deploy` writes to the install it finds. |
+| `--dry-run` | Report what `--deploy` would add, update and withdraw, then stop without writing anything. Use it to check the detected target. |
 | `--no-pdb` | Drop the `.pdb` debug symbols. |
-| `--verify-only` | Check an existing payload instead of assembling one. Exit code 1 when incomplete, so it works as a CI gate. |
+| `--verify-only` | Check an existing payload instead of assembling one. Exits non-zero when the payload is incomplete **or** a plugin folder is missing from `[InstallDelete]`, so it works as a CI gate. |
+
+Two safety properties worth knowing before you pass paths to it:
+
+- **`--out` and `--base` may not overlap, in either direction.** The payload is
+  wiped before it is written and the base tree is read from, so `--out` equal to
+  `--base` would delete the tree it is about to copy from, and a `--base` inside
+  `--out` would go with it. Both are refused, comparing paths case-insensitively
+  because Windows paths are.
+- **Removing a stale Panel touches the payload copy only.** The base tree keeps
+  whatever it shipped with.
 
 Two things it derives rather than being told:
 
@@ -116,6 +132,23 @@ Two things it derives rather than being told:
   only when its assembly name matches its folder name, because that is how
   CounterStrikeSharp locates it — `plugins\<Name>\<Name>.dll`. Helper assemblies
   sharing a folder (`plugins\BotAI\Common.csproj`) are reported and skipped.
+- **Only projects under `counterstrikesharp\plugins\` or `\shared\` are considered
+  plugins at all.** A scratch project elsewhere under `addons\` — a build workspace,
+  say — is reported and left out of the package.
+- **Sub-paths below a project's output root map onto CounterStrikeSharp's install
+  root**, not onto the project folder. `BotHiderImpl` relies on this: a custom
+  MSBuild target copies `0Harmony.dll` into `shared\0Harmony\`, so the built tree
+  looks like
+
+  ```
+  bin\Release\net10.0\BotHiderImpl.dll
+  bin\Release\net10.0\shared\0Harmony\0Harmony.dll
+  ```
+
+  and the second path becomes
+  `addons\counterstrikesharp\shared\0Harmony\0Harmony.dll` in the payload.
+  Missing that would ship a stale Harmony after a `Lib.Harmony` bump, because
+  nothing else ever refreshes that file.
 
 ### If you want to rebuild the plugins yourself
 
@@ -150,28 +183,151 @@ open Visual Studio:
   | `plugins\BotControllerImpl` | `../BotControllerApi/` | `shared\BotControllerApi\` |
   | `plugins\BotHiderImpl` | `..\BotHiderApi\` | `shared\BotHiderApi\` |
 
-  The tool reports this instead of rewriting it, because where a shared API's
-  source belongs is a project decision. `--stage-references` prints the exact
-  replacement line for each.
-- **`CounterStrikeSharp.API` is pinned to five different versions** across the
-  projects: 1.0.362 (×1), 1.0.367 (×2), 1.0.371 (×6), 1.0.373 (×2), and a floating
-  `*` (×2). The distribution's own `api\CounterStrikeSharp.API.dll` reports
-  **1.0.373**, so nine of those pins are older than the runtime they load into,
-  and the floating ones can resolve to something *newer* than it on a fresh
-  restore — the direction that produces `MissingMethodException` at run time. Worth
-  pinning all of them to the version the shipped runtime actually provides.
+  The tool reports this rather than fixing it silently — the files are yours. To
+  have it apply exactly the replacement above, and print the `git checkout` command
+  that undoes it:
+
+  ```bat
+  node inno-setup\tools\assemble-payload.mjs --fix-references
+  ```
+
+  The replacement is derived from where the project actually is, so it is the only
+  path that can work in this checkout. Verified: with it applied, **all 11 projects
+  compile**; without it, those two fail and the rest build.
+- **`CounterStrikeSharp.API` is pinned three ways in the build** — 1.0.367 (×2),
+  1.0.371 (×6), 1.0.373 (×2) — across 10 references in 8 projects
+  (`BotControllerApi` and `BotHiderApi` reference no CSS API at all).
+
+  The version that matters is the one the *runtime* provides, and it is readable as
+  plain text from the tree's own
+  `addons\counterstrikesharp\api\CounterStrikeSharp.API.deps.json`:
+  **1.0.373**. So eight of the ten pins are older than the runtime they load into.
+  That direction is normally harmless — .NET Core resolves a reference *up* to
+  whichever version is present rather than demanding an exact match, so it breaks
+  only if a member a plugin calls was removed. The fatal direction is the opposite
+  one: a pin *newer* than the runtime calls members that do not exist and fails at
+  load with `MissingMethodException`.
+
+  Both the tool and this document used to claim a `*` floating pin and a 1.0.362 pin
+  were part of the build. They are not: those live in
+  `plugins\disabled\`, which `walk()` skips, the solution generator excludes and the
+  package never contains. **No pin in the build is floating**, so a restore cannot
+  silently pull something newer than the runtime. `--deploy` and payload assembly
+  both re-check this against the tree in front of them and warn if that ever stops
+  being true.
+- **The package ships its own .NET runtime, and that is what decides the target
+  framework.** `addons\counterstrikesharp\dotnet\shared\Microsoft.NETCore.App\`
+  holds **10.0.3**, and `api\CounterStrikeSharp.API.runtimeconfig.json` sets
+  `"rollForward": "Major"`. The projects target two frameworks — `net10.0` for most,
+  `net8.0` for `BotBuy` and `RoundDamageRecap` — and **both load**: the first matches
+  the runtime directly, the second rolls forward to 10.0.3.
+
+  Verified against the shipped tree rather than assumed: building here produces the
+  same `runtimeTarget` for both (`v10.0` / `v8.0`), and `BotAI.deps.json` comes out
+  **byte-identical** to the released one. That file records the whole dependency
+  graph, so an exact match is about as close to proof as this gets that your
+  toolchain and the one that built the release agree.
+- **Pins can drift from the release without anyone noticing.** The same comparison
+  caught one: the tree pins `BotBuy` to `1.0.367`, while the *released* `BotBuy` was
+  built against `1.0.366`. Harmless in this direction — both resolve up to the
+  runtime's 1.0.373 — but it shows the pins were edited after the release, which is
+  exactly how a pin ends up newer than the runtime it loads into.
 - **There is no `.sln`, no `Directory.Build.props` and no `NuGet.config`** in the
-  repository, so you will want to create a solution yourself — and keep
-  `addons\counterstrikesharp\plugins\disabled\` out of it. That folder holds the
-  Linux variants, one of which references a path on the original author's
-  machine (`..\..\..\..\Tmp\ArchiveV02\Common\bin\Debug\net8.0\Common.dll`).
-  None of it is part of the release.
+  repository, so one command writes a solution listing exactly the right projects:
+
+  ```bat
+  node inno-setup\tools\assemble-payload.mjs --write-solution addons\plugins.slnx
+  ```
+
+  Point it at an existing `.slnx` to overwrite it. Keep
+  `addons\counterstrikesharp\plugins\disabled\` out of the solution: that folder
+  holds the Linux variants, one of which references a path on the original author's
+  machine (`..\..\..\..\Tmp\ArchiveV02\Common\bin\Debug\net8.0\Common.dll`). None of
+  it is part of the release. Any scratch project of your own elsewhere under
+  `addons\` is excluded automatically.
 - Target frameworks are `net10.0` for most projects and `net8.0` for `BotBuy` and
   `RoundDamageRecap`. A .NET 10 SDK can target both — no second SDK needed.
 
 The four native plugins (`BotController`, `BotHider`, `BotVision`, `RayTrace`)
 have **no source in this repository**; they live in other projects, so treat their
 binaries as vendored input rather than something to rebuild.
+
+### The loop while you are editing code
+
+Once an install exists you do not need to rebuild the installer to see a code
+change in game:
+
+```bat
+:: once per checkout — a solution with exactly the projects the package needs
+node inno-setup\tools\assemble-payload.mjs --write-solution addons\plugins.slnx
+
+:: build it, in Visual Studio or on the command line
+dotnet build addons\plugins.slnx -c Release
+
+:: push the rebuilt DLLs into the game
+node inno-setup\tools\assemble-payload.mjs --deploy
+```
+
+`--build --deploy` does the last two steps in one command. A `.slnx` on its own
+only compiles — putting the result where the game reads it is the separate third
+step, which is what `--deploy` is for.
+
+The deploy step locates the install by itself (registry, `libraryfolders.vdf`, then
+the conventional drive layouts), so with one Steam library and one CS2 it takes no
+argument. It prints the folder it picked; `--game` overrides it.
+
+**Auto-detection is not read-only.** A bare `--deploy` writes to whichever install
+it finds — so a command run merely to see what would be detected is itself a
+mutation. Add `--dry-run` for that:
+
+```bat
+node inno-setup\tools\assemble-payload.mjs --deploy --dry-run
+```
+
+It prints the same report — target folder, mode, API check, and every file it would
+add, update or withdraw — and writes nothing, leaving the deploy record untouched.
+
+What it will and will not do:
+
+- **Adds and updates, and withdraws only what it wrote itself.** It cannot take a
+  working install apart: the only deletions it performs are files listed in its own
+  record whose content still matches what it deployed. Anything edited since is
+  reported and kept. Pruning for an *upgrade* remains the installer's
+  `[InstallDelete]` step.
+- **Refuses to run half-way.** If any project has no `bin\Release` output it stops
+  and names them: deploying the rest would leave old and new assemblies side by
+  side, which is the state that is hardest to debug.
+- **Refuses while CS2 is running**, because a running game holds its plugin DLLs
+  open and the copy would fail part-way.
+- **Refuses when CounterStrikeSharp is missing** from the target folder. There would
+  be no plugin loader, so the copy would look successful while changing nothing.
+- Touches **only the 11 managed plugins**. Metamod, CounterStrikeSharp, the .NET
+  runtime, the four native plugins and `overrides\*.vpk` are vendored and nothing in
+  this repository builds them.
+- **Checks the `CounterStrikeSharp.API` pins against the runtime in the tree it is
+  deploying to.** A pin newer than the runtime, or a floating `*` that a restore
+  could resolve past it, produces `MissingMethodException` at plugin load — a
+  failure with no obvious cause in the plugin's own code. Older pins are reported as
+  a count only, because .NET Core resolves those up and they normally work.
+
+**It remembers what it deployed, so a plugin someone deletes does not linger.** The
+record is `inno-setup\.deploy-state.json` — git-ignored, keyed by game folder, one
+hash per file. If a teammate deletes or renames a plugin, the next `--deploy`
+removes the files it had written for it and prunes the emptied folder: otherwise
+CounterStrikeSharp, which loads *every* folder under `plugins\`, would keep loading
+the old build alongside the new one. This cannot be inferred from the disk instead —
+a plugin folder in the game is indistinguishable from a vendored one such as
+`RayTraceImpl`, which ships in the package and has no source here. Files edited since
+they were deployed are reported and kept, and stay tracked so later runs still know
+about them.
+
+**Check the mode before wondering why nothing changed.** Online Mode installs the
+*stock* `gameinfo.gi` on purpose, and CS2 then never reads `addons\metamod` —
+Metamod, CounterStrikeSharp and every plugin stay unloaded by design, which is what
+keeps official servers unaffected. A deploy still succeeds in that state; it just
+cannot show up in game. `--deploy` reports which mode it found and, in Online Mode,
+prints the `backup\WithBots\gameinfo.gi` that restores the mod. Switching the Panel
+back to Bot Mode is the whole fix — the deployed files are already in place.
 
 ---
 
@@ -265,6 +421,16 @@ The destination page replaces its description with an explanation of which
 folder to pick, translated for every bundled language, and the user can browse to
 it manually. The default field still starts at the conventional location.
 
+Whatever the user then chooses is checked before anything is written: if the folder
+holds neither `gameinfo.gi` nor `steam.inf`, a confirmation explains that the
+plugin would land somewhere the game never reads, and names the folder that was
+selected. Without that, a mistyped path or a machine with no detectable CS2 would
+produce a tidy, successful-looking install of 650 files that does nothing.
+
+`LooksLikeCsgoDir` is the whole check — two `FileExists` calls. Verified against
+the real install (true), the same path with a trailing backslash (true),
+`C:\Windows` (false) and a non-existent path (false).
+
 ---
 
 ## What gets installed
@@ -291,6 +457,56 @@ From the **repository** (documentation, which the payload does not carry):
 One optional task, **unchecked** by default: a desktop shortcut. Inno's own
 translations supply its label.
 
+### Upgrading over an existing install
+
+Inno does **not** remove files a previous version installed that the new version no
+longer ships. Verified with a two-version probe: a dropped file and a renamed file
+both survived an in-place upgrade, including on the real upgrade path where Inno
+picks up the previous install from the registry.
+
+That matters here because CounterStrikeSharp loads *every* folder under
+`plugins\`. A plugin left behind by the previous release would still be loaded
+beside the new build, which produces duplicate-plugin errors at best.
+
+So `[InstallDelete]` clears each directory the mod owns outright before extraction.
+Only mod-owned paths are listed — `overrides` also holds
+`swift_demo_menu_override.vpk`, `cfg\` holds Valve's configs and user edits,
+`counterstrikesharp\configs` holds the user's `core.json`, and `metamod\` holds a
+`metaplugins.ini` users may have edited, so none of those are touched.
+
+`assemble-payload.mjs` checks the payload against that list and warns when a plugin
+folder is not covered, and `--verify-only` fails on it — so adding a plugin cannot
+silently leave the list behind.
+
+`gameinfo.gi` and the Panel are handled separately and deliberately:
+- the Panel is installed under a **fixed** name, so an upgrade overwrites the
+  previous build rather than leaving version-stamped copies behind;
+- `gameinfo.gi` is flagged `uninsneveruninstall` and restored on uninstall, as
+  described below.
+
+### Uninstalling, and why `cfg\` and `gameinfo.gi` are handled differently
+
+The plugin overwrites files the base game also ships: `gameinfo.gi` (two extra
+search paths so CS2 looks inside `addons\`) and the `cfg\gamemode_*.cfg` set.
+
+Inno's uninstaller removes files from its own list and **does not care that the
+content changed** — verified by installing a file, replacing it with entirely
+different content, and uninstalling: the file was deleted anyway. That makes a
+Steam game update dangerous: once it restores Valve's copy of `gameinfo.gi`,
+uninstalling would delete a file CS2 needs, and the game would only start again
+after **Verify integrity of game files**.
+
+So those two entries carry `uninsneveruninstall` and survive uninstallation:
+
+| Item | On uninstall |
+| --- | --- |
+| `gameinfo.gi` | Kept, and **restored to Valve's original content** — `CurUninstallStepChanged` copies the pristine `backup\Online\gameinfo.gi` over it before Inno removes `backup\`. `usUninstall` is used because it was verified to run while `backup\` still exists. |
+| `cfg\*` | Kept as-is. The mod's own three configs (`bot_buy.cfg`, `my_bot_ffa_config.cfg`, `my_bot_normal_config.cfg`, ≈9 KB) stay behind, and the `gamemode_*.cfg` files keep the mod's bot-friendly rules. Nothing is deleted, so the game cannot be left without a file it needs. |
+| `addons\`, `overrides\`, `backup\`, the Panel, the docs | Removed normally — all of it is the mod's own. |
+
+Everything else the installer adds is removed as usual, including the Panel,
+the documentation and the uninstaller itself.
+
 ### Notes
 
 - The Panel is installed under a **fixed** name,
@@ -299,8 +515,6 @@ translations supply its label.
   version-stamped executables behind in the game folder.
 - `Panel\LICENSE` travels with the Panel binary, because the Panel is under
   PolyForm Strict 1.0.0 while the rest of the project is AGPL-3.0.
-- Uninstalling removes the files the installer added (Inno tracks them).
-  Anything the user edited in place is removed along with them.
 
 ---
 

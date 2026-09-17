@@ -55,7 +55,7 @@ export default function DropKnivesSection() {
           className={`dk__bind-box ${capturing ? "is-capturing" : ""}`}
           disabled={disabled}
           onClick={() => setCapturing(true)}
-          title="Click, then press a key"
+          title={t("pre.clickThenPressKey")}
         >
           {capturing ? t("pre.pressKey") : bindKey === "\\" ? "\\" : bindKey}
         </button>
@@ -71,7 +71,7 @@ export default function DropKnivesSection() {
             title={`subclass_create ${k.id}`}
             aria-pressed={selected.has(k.id)}
           >
-            <img src={k.url} alt={`knife ${k.id}`} draggable={false} />
+            <img src={k.url} alt={t("pre.knifeAlt", { id: k.id })} draggable={false} />
           </button>
         ))}
       </div>

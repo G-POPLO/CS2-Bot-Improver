@@ -1,0 +1,14 @@
+<Solution>
+  <Folder Name="/plugins/" />
+  <Project Path="counterstrikesharp/plugins/BotAI/BotAI.csproj" />
+  <Project Path="counterstrikesharp/plugins/BotAimImprover/BotAimImprover.csproj" />
+  <Project Path="counterstrikesharp/plugins/BotBuy/BotBuy.csproj" />
+  <Project Path="counterstrikesharp/plugins/BotControllerImpl/BotControllerImpl.csproj" />
+  <Project Path="counterstrikesharp/plugins/BotHiderImpl/BotHiderImpl.csproj" />
+  <Project Path="counterstrikesharp/plugins/BotRandomizer/BotRandomizer.csproj" />
+  <Project Path="counterstrikesharp/plugins/BotState/BotState.csproj" />
+  <Project Path="counterstrikesharp/plugins/NadeSystem/NadeSystem.csproj" />
+  <Project Path="counterstrikesharp/plugins/RoundDamageRecap/RoundDamageRecap.csproj" />
+  <Project Path="counterstrikesharp/shared/BotControllerApi/BotControllerApi.csproj" />
+  <Project Path="counterstrikesharp/shared/BotHiderApi/BotHiderApi.csproj" />
+</Solution>

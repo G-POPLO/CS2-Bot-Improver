@@ -1,0 +1,30 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Everything the Panel frontend is allowed to call. The window is created hidden (tauri.conf.json) and sized/centred by src/main.tsx, so show/set-size/center are required at startup; the three plugins cover the clipboard copy buttons, the directory picker and the GitHub links.",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-show",
+    "core:window:allow-hide",
+    "core:window:allow-close",
+    "core:window:allow-minimize",
+    "core:window:allow-set-size",
+    "core:window:allow-center",
+    "core:window:allow-current-monitor",
+    "core:window:allow-primary-monitor",
+    "core:window:allow-available-monitors",
+    "core:window:allow-scale-factor",
+    "core:window:allow-inner-size",
+    "core:window:allow-outer-size",
+    "core:window:allow-start-dragging",
+    "core:webview:allow-set-webview-zoom",
+    "core:webview:allow-internal-toggle-devtools",
+    "clipboard-manager:allow-write-text",
+    "dialog:allow-open",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [{ "url": "https://**" }]
+    }
+  ]
+}

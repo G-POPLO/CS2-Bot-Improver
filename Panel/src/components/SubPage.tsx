@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { useT } from "../i18n";
 import { BackIcon } from "./icons";
 import StatusDot, { type Status } from "./StatusDot";
 import "./SubPage.css";
@@ -13,10 +14,11 @@ type Props = {
 
 // Full-screen sub-view with an icon-only back button, matching Settings.
 export default function SubPage({ title, onBack, status, right, children }: Props) {
+  const t = useT();
   return (
     <div className="subpage">
       <div className="subpage__head">
-        <button className="subpage__back" onClick={onBack} aria-label="Back">
+        <button className="subpage__back" onClick={onBack} aria-label={t("common.back")}>
           <BackIcon size={20} />
         </button>
         <span className="subpage__title">{title}</span>

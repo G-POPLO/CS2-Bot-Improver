@@ -1,0 +1,48 @@
+[package]
+name = "cs2-bot-improver-panel"
+version = "1.4.5"
+description = "Desktop control panel for CS2 Bot Improver"
+authors = ["CS2-Bot-Improver contributors"]
+edition = "2021"
+rust-version = "1.77.2"
+license = "PolyForm-Strict-1.0.0"
+publish = false
+
+# The command implementations live in a library target so `cargo test --lib` can
+# exercise them; main.rs is a one-line wrapper that starts the app.
+[lib]
+name = "panel_lib"
+path = "src/lib.rs"
+
+# The frontend expects a file called `Panel.exe` (inno-setup/tools/assemble-payload.mjs
+# publishes it as `Panel.exe`, and setup.iss renames it on install), so the binary
+# target is named explicitly rather than inheriting the package name.
+[[bin]]
+name = "Panel"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-clipboard-manager = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[features]
+# Standard Tauri switch: off → the webview loads `build.devUrl` (dev server),
+# on → the frontend bundle produced by `npm run build` is embedded in the binary
+# and served over the `tauri://` custom protocol. Release builds need it on.
+custom-protocol = ["tauri/custom-protocol"]
+
+# Release builds are big and slow to link; keep them from hogging the machine
+# when several crates compile in parallel.
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true
