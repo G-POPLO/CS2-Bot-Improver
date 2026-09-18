@@ -1,14 +1,13 @@
-using System.Collections.Concurrent;
-using System.Runtime.InteropServices;
 using CounterStrikeSharp.API;
 using CounterStrikeSharp.API.Core;
 using CounterStrikeSharp.API.Core.Attributes;
-using CounterStrikeSharp.API.Modules.Memory;
-using CounterStrikeSharp.API.Modules.Utils;
-using CounterStrikeSharp.API.Modules.Memory.DynamicFunctions;
 using CounterStrikeSharp.API.Core.Capabilities;
-using RayTraceAPI;
+using CounterStrikeSharp.API.Modules.Memory.DynamicFunctions;
+using CounterStrikeSharp.API.Modules.Utils;
 using Microsoft.Extensions.Logging;
+using RayTraceAPI;
+using System.Collections.Concurrent;
+using System.Runtime.InteropServices;
 
 
 namespace BotAimImprover;
@@ -416,8 +415,8 @@ public class BotAimImprover : BasePlugin
             var rt = _rayTraceCapability.Get();
             if (rt == null) return true; // RayTrace not loaded -> don't block
             var end = new Vector(tx, ty, tz);
-            var opts = new TraceOptions(InteractionLayers.MASK_WORLD_ONLY);
-            rt.TraceEndShape(eye, end, null, opts, out TraceResult res);
+            var opts = new RayTraceAPI.TraceOptions(InteractionLayers.MASK_WORLD_ONLY);
+            rt.TraceEndShape(eye, end, null, opts, out RayTraceAPI.TraceResult res);
             return res.Fraction >= 0.999f;
         }
         catch { return true; }
